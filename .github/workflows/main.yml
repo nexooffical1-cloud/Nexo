@@ -55,7 +55,7 @@ jobs:
         run: |
           chmod +x android/gradlew
           cd android
-          ./gradlew assembleDebug
+          ./gradlew assembleRelease
           cd ..
 
       - name: Find and save APK
