@@ -50,16 +50,18 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      
       - name: Build APK
         run: |
           chmod +x android/gradlew
           cd android
-          ./gradlew assembleRelease
-          
+          ./gradlew assembleDebug
+          cd ..
 
-      - name: Save APK
+      - name: Find and save APK
         uses: actions/upload-artifact@v4
         with:
           name: Nexo-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: '**/build/outputs/apk/**/*.apk'
           if-no-files-found: error
+          
