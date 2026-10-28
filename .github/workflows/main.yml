@@ -20,12 +20,12 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
 
       - name: Install dependencies
         run: |
           npm install --no-audit --no-fund
-          npm install @capacitor/core@latest @capacitor/android@latest @capacitor/cli@latest --no-audit --no-fund
+          npm install @capacitor/core @capacitor/android @capacitor/cli --no-audit --no-fund
 
       - name: Prepare Nexo
         run: |
@@ -39,12 +39,6 @@ jobs:
           }
           EOF
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-
       - name: Create Android project
         run: npx cap add android
 
@@ -55,11 +49,11 @@ jobs:
         run: |
           chmod +x android/gradlew
           cd android
-          ./gradlew assembleRelease
+          ./gradlew assembleDebug
 
       - name: Save APK
         uses: actions/upload-artifact@v4
         with:
           name: Nexo-APK
-          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
-          
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
