@@ -1,0 +1,15 @@
+{
+  "name": "nexo-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Nexo web app packaged for Android",
+  "scripts": {
+    "build": "echo Web app is already in www"
+  },
+  "dependencies": {
+    "@capacitor/core": "^7.4.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.4.3"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "appId": "com.nexotech.nexo",
+  "appName": "Nexo",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}
