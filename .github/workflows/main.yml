@@ -4,7 +4,8 @@ name: Build Nexo Signed Release
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -14,13 +15,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout project
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '20'
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -28,13 +29,14 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Install dependencies
+      - name: Install Capacitor 7
         run: |
           npm install --no-audit --no-fund
           npm install @capacitor/core@7 @capacitor/android@7 @capacitor/cli@7 --no-audit --no-fund
 
-      - name: Prepare Nexo
+      - name: Prepare HTML
         run: |
+          test -f index.html
           mkdir -p www
           cp index.html www/index.html
           cat > capacitor.config.json <<'EOF'
@@ -51,36 +53,58 @@ jobs:
       - name: Sync Android
         run: npx cap sync android
 
-      - name: Configure signing
+      - name: Prepare signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          set -e
+          set -eu
           test -n "$KEYSTORE_BASE64"
           test -n "$KEYSTORE_PASSWORD"
           test -n "$KEY_ALIAS"
           test -n "$KEY_PASSWORD"
 
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/nexo-release.jks"
+          test -s "$RUNNER_TEMP/nexo-release.jks"
+
           keytool -list \
             -keystore "$RUNNER_TEMP/nexo-release.jks" \
             -storepass "$KEYSTORE_PASSWORD" \
             -alias "$KEY_ALIAS"
 
+      - name: Configure Gradle signing
+        run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
           p = Path("android/app/build.gradle")
+          if not p.exists():
+              raise SystemExit("ERROR: android/app/build.gradle not found")
+
           s = p.read_text()
 
+          def block(text, pattern):
+              m = re.search(pattern, text)
+              if not m:
+                  raise SystemExit("ERROR: Gradle block not found: " + pattern)
+              opening = text.find("{", m.start())
+              depth = 0
+              for i in range(opening, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return opening, i
+              raise SystemExit("ERROR: Unclosed Gradle block")
+
           if "signingConfigs" not in s:
-              s = re.sub(
-                  r'android\s*\{',
-                  """android {
+              a, _ = block(s, r'\bandroid\s*\{')
+              a += 1
+              signing = """
               signingConfigs {
                   release {
                       storeFile file(System.getenv("KEYSTORE_PATH"))
@@ -89,29 +113,29 @@ jobs:
                       keyPassword System.getenv("KEY_PASSWORD")
                   }
               }
-          """,
-                  s,
-                  count=1
-              )
+          """
+              s = s[:a] + signing + s[a:]
 
-          match = re.search(r'buildTypes\s*\{', s)
-          if not match:
-              raise SystemExit("ERROR: buildTypes not found")
+          bt, _ = block(s, r'\bbuildTypes\s*\{')
+          _, bt_end = block(s[bt:], r'\bbuildTypes\s*\{')
+          build_types = s[bt:bt + (bt_end - bt) + 1]
 
-          release = re.search(r'release\s*\{', s[match.end():])
-          if not release:
+          rel = re.search(r'\brelease\s*\{', build_types)
+          if not rel:
               raise SystemExit("ERROR: release build type not found")
 
-          pos = match.end() + release.end()
-          if "signingConfig signingConfigs.release" not in s:
+          rel_open = build_types.find("{", rel.start())
+          if "signingConfig signingConfigs.release" not in build_types[rel_open:]:
+              pos = bt + rel_open + 1
               s = s[:pos] + "\n            signingConfig signingConfigs.release\n" + s[pos:]
 
           p.write_text(s)
+          print("Release signing configured")
           PY
         env:
           KEYSTORE_PATH: ${{ runner.temp }}/nexo-release.jks
 
-      - name: Build Release APK
+      - name: Build signed Release APK
         working-directory: android
         env:
           KEYSTORE_PATH: ${{ runner.temp }}/nexo-release.jks
@@ -124,9 +148,10 @@ jobs:
 
       - name: Verify APK signature
         run: |
+          set -eu
           APK="android/app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose "$APK"
 
