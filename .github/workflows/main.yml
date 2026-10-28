@@ -27,17 +27,13 @@ jobs:
           npm install --no-audit --no-fund
           npm install @capacitor/core @capacitor/android @capacitor/cli --no-audit --no-fund
 
+      
       - name: Prepare Nexo
         run: |
           mkdir -p www
           cp index.html www/index.html
-          cat > capacitor.config.json <<'EOF'
-          {
-            "appId": "com.nexo.app",
-            "appName": "Nexo",
-            "webDir": "www"
-          }
-          EOF
+          printf '%s\n' '{"appId":"com.nexo.app","appName":"Nexo","webDir":"www"}' > capacitor.config.json
+          
 
       - name: Create Android project
         run: npx cap add android
