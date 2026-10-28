@@ -22,10 +22,12 @@ jobs:
         with:
           node-version: 20
 
+      
       - name: Install dependencies
         run: |
           npm install --no-audit --no-fund
-          npm install @capacitor/core @capacitor/android @capacitor/cli --no-audit --no-fund
+          npm install @capacitor/core@^7 @capacitor/android@^7 @capacitor/cli@^7 --no-audit --no-fund
+          
 
       
       - name: Prepare Nexo
