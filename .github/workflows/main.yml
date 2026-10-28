@@ -1,11 +1,10 @@
 
-name: Nexo Signed Release APK
+name: Build Nexo Signed Release
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -15,10 +14,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout project
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -30,18 +29,29 @@ jobs:
           java-version: '21'
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          npm install --no-audit --no-fund
+          npm install @capacitor/core@7 @capacitor/android@7 @capacitor/cli@7 --no-audit --no-fund
 
-      - name: Prepare web files
+      - name: Prepare Nexo
         run: |
           mkdir -p www
           cp index.html www/index.html
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.nexo.app",
+            "appName": "Nexo",
+            "webDir": "www"
+          }
+          EOF
 
-      - name: Sync Android project
-        run: |
-          npx cap sync android
+      - name: Create Android project
+        run: npx cap add android
 
-      - name: Configure release signing
+      - name: Sync Android
+        run: npx cap sync android
+
+      - name: Configure signing
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -49,30 +59,28 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set -e
-
           test -n "$KEYSTORE_BASE64"
           test -n "$KEYSTORE_PASSWORD"
           test -n "$KEY_ALIAS"
           test -n "$KEY_PASSWORD"
 
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/nexo-release.jks"
-          test -s "$RUNNER_TEMP/nexo-release.jks"
+          keytool -list \
+            -keystore "$RUNNER_TEMP/nexo-release.jks" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS"
 
           python3 - <<'PY'
           from pathlib import Path
           import re
 
           p = Path("android/app/build.gradle")
-          if not p.exists():
-              raise SystemExit("ERROR: android/app/build.gradle not found")
-
           s = p.read_text()
 
-          if "signingConfigs.release" in s:
-              print("Release signing config already exists")
-          else:
-              pattern = r'android\s*\{'
-              replacement = '''android {
+          if "signingConfigs" not in s:
+              s = re.sub(
+                  r'android\s*\{',
+                  """android {
               signingConfigs {
                   release {
                       storeFile file(System.getenv("KEYSTORE_PATH"))
@@ -81,24 +89,29 @@ jobs:
                       keyPassword System.getenv("KEY_PASSWORD")
                   }
               }
-          '''
-              s, n = re.subn(pattern, replacement, s, count=1)
-              if n != 1:
-                  raise SystemExit("ERROR: Could not configure Android signing")
+          """,
+                  s,
+                  count=1
+              )
 
-          release = re.search(r'release\s*\{', s)
+          match = re.search(r'buildTypes\s*\{', s)
+          if not match:
+              raise SystemExit("ERROR: buildTypes not found")
+
+          release = re.search(r'release\s*\{', s[match.end():])
           if not release:
               raise SystemExit("ERROR: release build type not found")
 
-          start = release.end()
-          s = s[:start] + '\n            signingConfig signingConfigs.release\n' + s[start:]
+          pos = match.end() + release.end()
+          if "signingConfig signingConfigs.release" not in s:
+              s = s[:pos] + "\n            signingConfig signingConfigs.release\n" + s[pos:]
 
           p.write_text(s)
           PY
         env:
           KEYSTORE_PATH: ${{ runner.temp }}/nexo-release.jks
 
-      - name: Build signed Release APK
+      - name: Build Release APK
         working-directory: android
         env:
           KEYSTORE_PATH: ${{ runner.temp }}/nexo-release.jks
@@ -109,9 +122,18 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease
 
+      - name: Verify APK signature
+        run: |
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose "$APK"
+
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: Nexo-Release-APK
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+          
