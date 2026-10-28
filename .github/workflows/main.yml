@@ -39,6 +39,12 @@ jobs:
           }
           EOF
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Create Android project
         run: npx cap add android
 
