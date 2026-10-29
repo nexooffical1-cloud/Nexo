@@ -74,66 +74,77 @@ jobs:
             -storepass "$KEYSTORE_PASSWORD" \
             -alias "$KEY_ALIAS"
 
+      
       - name: Configure Gradle signing
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
+          env:
+            KEYSTORE_PATH: ${{ runner.temp }}/nexo-release.jks
+          run: |
+            python3 - <<'PY'
+            from pathlib import Path
+            import re
 
-          p = Path("android/app/build.gradle")
-          if not p.exists():
-              raise SystemExit("ERROR: android/app/build.gradle not found")
+            p = Path("android/app/build.gradle")
+            if not p.exists():
+                raise SystemExit("ERROR: android/app/build.gradle not found")
 
-          s = p.read_text()
+            s = p.read_text()
 
-          def block(text, pattern):
-              m = re.search(pattern, text)
-              if not m:
-                  raise SystemExit("ERROR: Gradle block not found: " + pattern)
-              opening = text.find("{", m.start())
-              depth = 0
-              for i in range(opening, len(text)):
-                  if text[i] == "{":
-                      depth += 1
-                  elif text[i] == "}":
-                      depth -= 1
-                      if depth == 0:
-                          return opening, i
-              raise SystemExit("ERROR: Unclosed Gradle block")
+            def find_block(text, pattern):
+                m = re.search(pattern, text)
+                if not m:
+                    raise SystemExit("ERROR: Gradle block not found: " + pattern)
+                opening = text.find("{", m.start())
+                depth = 0
+                for i in range(opening, len(text)):
+                    if text[i] == "{":
+                        depth += 1
+                    elif text[i] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            return m.start(), opening, i
+                raise SystemExit("ERROR: Unclosed Gradle block")
 
-          if "signingConfigs" not in s:
-              a, _ = block(s, r'\bandroid\s*\{')
-              a += 1
-              signing = """
-              signingConfigs {
-                  release {
-                      storeFile file(System.getenv("KEYSTORE_PATH"))
-                      storePassword System.getenv("KEYSTORE_PASSWORD")
-                      keyAlias System.getenv("KEY_ALIAS")
-                      keyPassword System.getenv("KEY_PASSWORD")
-                  }
-              }
-          """
-              s = s[:a] + signing + s[a:]
+            if not re.search(r'\bsigningConfigs\s*\{', s):
+                _, android_open, _ = find_block(s, r'\bandroid\s*\{')
+                signing = """
+                signingConfigs {
+                    release {
+                        storeFile file(System.getenv("KEYSTORE_PATH"))
+                        storePassword System.getenv("KEYSTORE_PASSWORD")
+                        keyAlias System.getenv("KEY_ALIAS")
+                        keyPassword System.getenv("KEY_PASSWORD")
+                    }
+                }
+            """
+                s = s[:android_open + 1] + signing + s[android_open + 1:]
 
-          bt, _ = block(s, r'\bbuildTypes\s*\{')
-          _, bt_end = block(s[bt:], r'\bbuildTypes\s*\{')
-          build_types = s[bt:bt + (bt_end - bt) + 1]
+            bt_start, _, bt_end = find_block(s, r'\bbuildTypes\s*\{')
+            release_match = re.search(
+                r'\brelease\s*\{', s[bt_start:bt_end + 1]
+            )
+            if not release_match:
+                raise SystemExit("ERROR: release build type not found")
 
-          rel = re.search(r'\brelease\s*\{', build_types)
-          if not rel:
-              raise SystemExit("ERROR: release build type not found")
+            release_start = bt_start + release_match.start()
+            _, release_open, release_end = find_block(
+                s[release_start:], r'\brelease\s*\{'
+            )
+            release_open += release_start
+            release_end += release_start
 
-          rel_open = build_types.find("{", rel.start())
-          if "signingConfig signingConfigs.release" not in build_types[rel_open:]:
-              pos = bt + rel_open + 1
-              s = s[:pos] + "\n            signingConfig signingConfigs.release\n" + s[pos:]
+            release_body = s[release_open + 1:release_end]
+            if not re.search(r'\bsigningConfig\s+signingConfigs\.release\b', release_body):
+                s = (
+                    s[:release_open + 1]
+                    + "\n            signingConfig signingConfigs.release\n"
+                    + s[release_open + 1:]
+                )
 
-          p.write_text(s)
-          print("Release signing configured")
-          PY
-        env:
-          KEYSTORE_PATH: ${{ runner.temp }}/nexo-release.jks
+            p.write_text(s)
+            print("Release signing configured successfully")
+            PY
+            
+      
 
       - name: Build signed Release APK
         working-directory: android
