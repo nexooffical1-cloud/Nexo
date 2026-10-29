@@ -74,77 +74,97 @@ jobs:
             -storepass "$KEYSTORE_PASSWORD" \
             -alias "$KEY_ALIAS"
 
-      
       - name: Configure Gradle signing
-          env:
-            KEYSTORE_PATH: ${{ runner.temp }}/nexo-release.jks
-          run: |
-            python3 - <<'PY'
-            from pathlib import Path
-            import re
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/nexo-release.jks
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-            p = Path("android/app/build.gradle")
-            if not p.exists():
-                raise SystemExit("ERROR: android/app/build.gradle not found")
+          p = Path("android/app/build.gradle")
+          if not p.exists():
+              raise SystemExit("ERROR: android/app/build.gradle not found")
 
-            s = p.read_text()
+          s = p.read_text()
 
-            def find_block(text, pattern):
-                m = re.search(pattern, text)
-                if not m:
-                    raise SystemExit("ERROR: Gradle block not found: " + pattern)
-                opening = text.find("{", m.start())
-                depth = 0
-                for i in range(opening, len(text)):
-                    if text[i] == "{":
-                        depth += 1
-                    elif text[i] == "}":
-                        depth -= 1
-                        if depth == 0:
-                            return m.start(), opening, i
-                raise SystemExit("ERROR: Unclosed Gradle block")
+          def matching_brace(text, opening):
+              depth = 0
+              for i in range(opening, len(text)):
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return i
+              raise SystemExit("ERROR: Unclosed Gradle block")
 
-            if not re.search(r'\bsigningConfigs\s*\{', s):
-                _, android_open, _ = find_block(s, r'\bandroid\s*\{')
-                signing = """
-                signingConfigs {
-                    release {
-                        storeFile file(System.getenv("KEYSTORE_PATH"))
-                        storePassword System.getenv("KEYSTORE_PASSWORD")
-                        keyAlias System.getenv("KEY_ALIAS")
-                        keyPassword System.getenv("KEY_PASSWORD")
-                    }
-                }
-            """
-                s = s[:android_open + 1] + signing + s[android_open + 1:]
+          def locate_block(text, pattern, start=0, end=None):
+              if end is None:
+                  end = len(text)
+              m = re.search(pattern, text[start:end])
+              if not m:
+                  return None
+              block_start = start + m.start()
+              opening = text.find("{", block_start, end)
+              if opening < 0:
+                  raise SystemExit("ERROR: Opening brace not found")
+              closing = matching_brace(text, opening)
+              return block_start, opening, closing
 
-            bt_start, _, bt_end = find_block(s, r'\bbuildTypes\s*\{')
-            release_match = re.search(
-                r'\brelease\s*\{', s[bt_start:bt_end + 1]
-            )
-            if not release_match:
-                raise SystemExit("ERROR: release build type not found")
+          android = locate_block(s, r'\bandroid\s*\{')
+          if android is None:
+              raise SystemExit("ERROR: android block not found")
 
-            release_start = bt_start + release_match.start()
-            _, release_open, release_end = find_block(
-                s[release_start:], r'\brelease\s*\{'
-            )
-            release_open += release_start
-            release_end += release_start
+          _, android_open, android_end = android
 
-            release_body = s[release_open + 1:release_end]
-            if not re.search(r'\bsigningConfig\s+signingConfigs\.release\b', release_body):
-                s = (
-                    s[:release_open + 1]
-                    + "\n            signingConfig signingConfigs.release\n"
-                    + s[release_open + 1:]
-                )
+          signing = locate_block(
+              s, r'\bsigningConfigs\s*\{', android_open, android_end + 1
+          )
 
-            p.write_text(s)
-            print("Release signing configured successfully")
-            PY
-            
-      
+          if signing is None:
+              signing_text = """
+              signingConfigs {
+                  release {
+                      storeFile file(System.getenv("KEYSTORE_PATH"))
+                      storePassword System.getenv("KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("KEY_ALIAS")
+                      keyPassword System.getenv("KEY_PASSWORD")
+                  }
+              }
+
+          """
+              s = s[:android_open + 1] + signing_text + s[android_open + 1:]
+
+          android = locate_block(s, r'\bandroid\s*\{')
+          _, android_open, android_end = android
+
+          build_types = locate_block(
+              s, r'\bbuildTypes\s*\{', android_open, android_end + 1
+          )
+          if build_types is None:
+              raise SystemExit("ERROR: buildTypes block not found in android block")
+
+          _, bt_open, bt_end = build_types
+          release = locate_block(
+              s, r'\brelease\s*\{', bt_open, bt_end + 1
+          )
+          if release is None:
+              raise SystemExit("ERROR: release block not found in buildTypes")
+
+          _, release_open, release_end = release
+          body = s[release_open + 1:release_end]
+
+          if not re.search(r'\bsigningConfig\s+signingConfigs\.release\b', body):
+              s = (
+                  s[:release_open + 1]
+                  + "\n                signingConfig signingConfigs.release\n"
+                  + s[release_open + 1:]
+              )
+
+          p.write_text(s)
+          print("Release signing configured successfully")
+          PY
 
       - name: Build signed Release APK
         working-directory: android
@@ -154,6 +174,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          set -eu
           chmod +x gradlew
           ./gradlew assembleRelease
 
@@ -162,6 +183,7 @@ jobs:
           set -eu
           APK="android/app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
+
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose "$APK"
